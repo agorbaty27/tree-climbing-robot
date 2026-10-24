@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dual Stepper Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #14171c; --panel: #1e232b; --panel2: #262d37; --text: #e8ecf1;
+    --muted: #8b97a5; --accent: #4da3ff; --green: #3ddc84; --red: #ff5c5c;
+    --amber: #ffb84d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px 20px; background: var(--panel); border-bottom: 1px solid #000;
+  }
+  header h1 { font-size: 17px; margin: 0 12px 0 0; font-weight: 600; }
+  select, button, input[type=number] {
+    background: var(--panel2); color: var(--text); border: 1px solid #3a4350;
+    border-radius: 6px; padding: 7px 12px; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #08263f; font-weight: 600; }
+  button.danger { background: #3a2326; border-color: var(--red); color: var(--red); }
+  button:disabled { opacity: .4; cursor: default; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+  .dot.on { background: var(--green); }
+  #statusText { color: var(--muted); font-size: 13px; }
+  main {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 18px; padding: 18px; max-width: 1100px; margin: 0 auto;
+  }
+  .motor {
+    background: var(--panel); border: 1px solid #2c333d; border-radius: 12px;
+    padding: 18px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .motor h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+  .motor h2 .slot { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: auto; }
+  .modes { display: flex; border: 1px solid #3a4350; border-radius: 8px; overflow: hidden; }
+  .modes button {
+    flex: 1; border: none; border-radius: 0; background: transparent; padding: 8px;
+    color: var(--muted);
+  }
+  .modes button.active { background: var(--accent); color: #08263f; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row label { font-size: 12px; color: var(--muted); min-width: 86px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .bigval {
+    font-size: 30px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums;
+  }
+  .bigval small { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .btnrow { display: flex; gap: 8px; }
+  .btnrow button { flex: 1; }
+  .btnrow input[type=number] { width: 80px; }
+  details { background: var(--panel2); border-radius: 8px; padding: 10px 14px; }
+  summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+  details .row { margin-top: 10px; }
+  details input[type=number] { width: 90px; }
+  .moveStatus { font-size: 12px; color: var(--muted); text-align: center; min-height: 15px; }
+  .hint { color: var(--muted); font-size: 11px; text-align: center; }
+  #log {
+    grid-column: 1 / -1; background: var(--panel); border-radius: 12px;
+    border: 1px solid #2c333d; padding: 12px 16px; font-family: ui-monospace, monospace;
+    font-size: 12px; color: var(--muted); max-height: 140px; overflow-y: auto;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Dual Stepper Control</h1>
+  <div class="dot" id="connDot"></div>
+  <select id="portSel"><option>scanning…</option></select>
+  <button id="refreshBtn" title="Rescan ports">⟳</button>
+  <button id="connectBtn" class="primary">Connect</button>
+  <span id="statusText">disconnected</span>
+  <button id="stopAll" class="danger" style="margin-left:auto">STOP ALL</button>
+</header>
+
+<main id="main">
+  <section class="motor" id="syncPanel" style="grid-column: 1 / -1">
+    <h2>Counter-rotation <span class="slot">both motors, same RPM, opposite directions</span></h2>
+    <div class="row" style="justify-content:center">
+      <label style="min-width:auto">RPM</label>
+      <input type="number" id="syncRpm" value="1" min="0" step="0.1" style="width:90px">
+      <button id="syncStart" class="primary">Start ⟲ ⟳</button>
+      <button id="syncSwap">Swap directions</button>
+      <button id="syncStop" style="border-color:var(--amber);color:var(--amber)">STOP</button>
+      <span id="syncStatus" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+  </section>
+</main>
+
+<template id="motorTpl">
+  <section class="motor">
+    <h2><span class="name"></span><span class="slot"></span></h2>
+    <div class="modes">
+      <button data-mode="move" class="active">Move (controlled)</button>
+      <button data-mode="continuous">Continuous rotation</button>
+    </div>
+
+    <div class="modePanel" data-panel="move">
+      <div class="btnrow">
+        <button data-deg="-360">−1 rev</button>
+        <button data-deg="-90">−90°</button>
+        <button data-deg="-10">−10°</button>
+        <button data-deg="10">+10°</button>
+        <button data-deg="90">+90°</button>
+        <button data-deg="360">+1 rev</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="customCCW">◀ Move</button>
+        <input type="number" class="customDeg" value="180" step="1" min="0"> <span style="align-self:center;color:var(--muted);font-size:12px">deg</span>
+        <button class="customCW">Move ▶</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label>Move speed</label>
+        <input type="range" class="moveSpeed" min="10" max="8000" value="1000" step="10">
+        <span class="moveSpeedLabel" style="font-size:12px;color:var(--muted);min-width:110px;text-align:right"></span>
+      </div>
+      <div class="moveStatus"></div>
+    </div>
+
+    <div class="modePanel" data-panel="continuous" style="display:none">
+      <div class="bigval"><span class="pwrVal">0</span><small>% power</small></div>
+      <div class="hint runInfo" style="min-height:13px"></div>
+      <div class="row">
+        <label>Power</label>
+        <input type="range" class="runSlider" min="-100" max="100" value="0" step="1">
+      </div>
+      <div class="hint">negative = reverse · 0 = stop (motor holds position)</div>
+      <div class="btnrow">
+        <button data-run="-100">Full ◀</button>
+        <button data-run="-25">25% ◀</button>
+        <button class="stopBtn" style="border-color:var(--amber);color:var(--amber)">STOP</button>
+        <button data-run="25">25% ▶</button>
+        <button data-run="100">Full ▶</button>
+      </div>
+    </div>
+
+    <div class="btnrow">
+      <button class="releaseBtn">Release (freewheel)</button>
+      <button class="holdBtn">Energize (hold)</button>
+    </div>
+
+    <details>
+      <summary>Settings</summary>
+      <div class="row"><label>Steps / rev</label><input type="number" class="stepsPerRev" value="3200" min="1"></div>
+      <div class="row"><label>Max steps/sec</label><input type="number" class="maxSps" value="8000" min="1" max="20000"></div>
+      <div class="row"><label>Invert direction</label><input type="checkbox" class="invertDir"></div>
+      <div class="row" style="font-size:11.5px;color:var(--muted)">
+        3200 steps/rev = 1.8° motor at 1/16 microstepping (typical A4988 default).
+        Check the MS1/MS2/MS3 jumpers under the driver socket if a "revolution"
+        comes out wrong.
+      </div>
+    </details>
+  </section>
+</template>
+
+<pre id="log">— command log —</pre>
+
+<script>
+const $ = (sel, el=document) => el.querySelector(sel);
+const log = msg => {
+  const el = $('#log');
+  el.textContent += '\n' + new Date().toLocaleTimeString() + '  ' + msg;
+  el.scrollTop = el.scrollHeight;
+};
+
+async function api(path, body) {
+  const opts = body ? {method:'POST', body: JSON.stringify(body)} : {};
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+// ---- serial command queue (coalesces slider spam per key, keeps order) ----
+const pending = new Map();   // key -> {cmd, cb}
+let sending = false;
+function queueCmd(key, cmd, cb) {
+  pending.delete(key);             // re-insert so latest value wins but order is fresh
+  pending.set(key, {cmd, cb});
+  pumpQueue();
+}
+async function pumpQueue() {
+  if (sending || pending.size === 0 || !connected) return;
+  sending = true;
+  const [key, {cmd, cb}] = pending.entries().next().value;
+  pending.delete(key);
+  const res = await api('/api/send', {cmd});
+  if (!res.ok) log('⚠ ' + (res.reply || 'send failed'));
+  if (cb) cb(res);
+  sending = false;
+  if (pending.size) pumpQueue();
+}
+
+// ---- connection ----
+let connected = false;
+function setConnected(on, port) {
+  connected = on;
+  $('#connDot').classList.toggle('on', on);
+  $('#statusText').textContent = on ? 'connected: ' + port : 'disconnected';
+  $('#connectBtn').textContent = on ? 'Disconnect' : 'Connect';
+}
+
+async function refreshPorts() {
+  const data = await api('/api/ports');
+  const sel = $('#portSel');
+  sel.innerHTML = '';
+  if (!data.ports.length) {
+    sel.innerHTML = '<option value="">no ports found — plug in the board</option>';
+    return;
+  }
+  for (const p of data.ports) {
+    const opt = document.createElement('option');
+    opt.value = p.device;
+    opt.textContent = p.device + ' — ' + p.description;
+    if (/usb|acm|wch|arduino/i.test(p.device + p.description)) sel.prepend(opt);
+    else sel.append(opt);
+  }
+  sel.selectedIndex = 0;
+}
+
+$('#refreshBtn').onclick = refreshPorts;
+$('#connectBtn').onclick = async () => {
+  if (connected) {
+    await api('/api/disconnect', {});
+    setConnected(false);
+    log('disconnected');
+    return;
+  }
+  const port = $('#portSel').value;
+  if (!port) { log('⚠ no port selected'); return; }
+  $('#connectBtn').disabled = true;
+  $('#statusText').textContent = 'connecting… (board resets, ~3 s)';
+  const res = await api('/api/connect', {port});
+  $('#connectBtn').disabled = false;
+  if (res.ok) { setConnected(true, port); log('connected to ' + port); pumpQueue(); }
+  else { setConnected(false); log('⚠ connect failed: ' + res.error); }
+};
+
+$('#stopAll').onclick = () => {
+  for (const m of motors) m.onStopAll();
+  $('#syncStatus').textContent = '';
+  queueCmd('stopall', 'X');
+  log('STOP ALL — motors stopped, drivers released');
+};
+
+// ---- motor panels ----
+const motors = [];
+
+function makeMotor(name, slot, index, moveCmd) {
+  const node = $('#motorTpl').content.cloneNode(true).firstElementChild;
+  $('.name', node).textContent = name;
+  $('.slot', node).textContent = slot + ' slot · index ' + index;
+
+  const stepsPerRev = () => +$('.stepsPerRev', node).value || 3200;
+  const maxSps = () => Math.min(20000, +$('.maxSps', node).value || 8000);
+  const sign = () => $('.invertDir', node).checked ? -1 : 1;
+  const rpm = sps => (sps * 60 / stepsPerRev()).toFixed(1);
+
+  // mode switching
+  let mode = 'move';
+  for (const btn of node.querySelectorAll('.modes button')) {
+    btn.onclick = () => {
+      mode = btn.dataset.mode;
+      for (const b of node.querySelectorAll('.modes button'))
+        b.classList.toggle('active', b === btn);
+      for (const p of node.querySelectorAll('.modePanel'))
+        p.style.display = p.dataset.panel === mode ? '' : 'none';
+      setRun(0);  // entering/leaving continuous: make sure nothing keeps spinning
+    };
+  }
+
+  // --- controlled move mode ---
+  const moveSpeedSlider = $('.moveSpeed', node);
+  const moveSpeedLabel = $('.moveSpeedLabel', node);
+  const moveStatus = $('.moveStatus', node);
+  const updateSpeedLabel = () => {
+    const sps = +moveSpeedSlider.value;
+    moveSpeedLabel.textContent = sps + ' sps · ' + rpm(sps) + ' RPM';
+  };
+  moveSpeedSlider.oninput = updateSpeedLabel;
+  // the custom max range drives both the move slider and 100% power
+  $('.maxSps', node).onchange = () => { moveSpeedSlider.max = maxSps(); updateSpeedLabel(); };
+  moveSpeedSlider.max = 8000;
+
+  let pollTimer = null;
+  const pollProgress = () => {
+    if (pollTimer) return;
+    pollTimer = setInterval(() => {
+      queueCmd('q', 'Q', res => {
+        // reply: "OK Q <a_left> <b_left>"
+        const parts = (res.reply || '').split(' ');
+        const left = +parts[2 + index];
+        if (!res.ok || isNaN(left)) { clearInterval(pollTimer); pollTimer = null; return; }
+        if (left === 0) {
+          moveStatus.textContent = 'move complete';
+          clearInterval(pollTimer); pollTimer = null;
+        } else if (left > 0) {
+          moveStatus.textContent = 'moving… ' + left + ' steps left';
+        }
+      });
+    }, 300);
+  };
+
+  const moveDegrees = deg => {
+    const steps = Math.round(deg / 360 * stepsPerRev()) * sign();
+    if (steps === 0) return;
+    const sps = Math.min(+moveSpeedSlider.value, maxSps());
+    moveStatus.textContent = 'moving…';
+    queueCmd('mv' + index, `${moveCmd} ${steps} ${sps}`, res => { if (res.ok) pollProgress(); });
+  };
+
+  for (const b of node.querySelectorAll('[data-deg]'))
+    b.onclick = () => moveDegrees(+b.dataset.deg);
+  $('.customCW', node).onclick = () => moveDegrees(Math.abs(+$('.customDeg', node).value));
+  $('.customCCW', node).onclick = () => moveDegrees(-Math.abs(+$('.customDeg', node).value));
+
+  // --- continuous mode (power = % of max step rate) ---
+  const runSlider = $('.runSlider', node);
+  const pwrVal = $('.pwrVal', node);
+  const runInfo = $('.runInfo', node);
+  const setRun = sps => {          // exact steps/sec (also used by sync panel)
+    sps = Math.max(-maxSps(), Math.min(maxSps(), Math.round(sps)));
+    const pct = Math.round(sps / maxSps() * 100);
+    runSlider.value = pct;
+    pwrVal.textContent = pct;
+    runInfo.textContent = sps === 0 ? '' :
+      Math.abs(sps) + ' steps/s · ' + Math.abs(+rpm(sps)).toFixed(1) + ' RPM';
+    queueCmd('run' + index, `R ${index} ${sps * sign()}`);
+  };
+  const setPower = pct => setRun(pct / 100 * maxSps());
+  runSlider.oninput = () => setPower(+runSlider.value);
+  for (const b of node.querySelectorAll('[data-run]'))
+    b.onclick = () => setPower(+b.dataset.run);
+  $('.stopBtn', node).onclick = () => setPower(0);
+
+  // --- enable / release ---
+  $('.releaseBtn', node).onclick = () => {
+    setRun(0);
+    queueCmd('en' + index, `E ${index} 0`);
+    moveStatus.textContent = 'driver released';
+  };
+  $('.holdBtn', node).onclick = () => queueCmd('en' + index, `E ${index} 1`);
+
+  updateSpeedLabel();
+  $('#main').append(node);
+
+  return {
+    setRun,
+    spsForRpm: r => r * stepsPerRev() / 60,
+    actualRpm: sps => sps * 60 / stepsPerRev(),
+    onStopAll() {
+      runSlider.value = 0;
+      pwrVal.textContent = '0';
+      runInfo.textContent = '';
+      moveStatus.textContent = '';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    },
+  };
+}
+
+motors.push(makeMotor('Motor A', 'E0', 0, 'A'));
+motors.push(makeMotor('Motor B', 'E1', 1, 'B'));
+$('#main').append($('#log'));
+
+// ---- counter-rotation (synced opposite spin) ----
+let syncDir = 1;
+function syncRun() {
+  const rpm = Math.abs(+$('#syncRpm').value) || 0;
+  if (rpm === 0) { syncStopAll(); return; }
+  const spsA = Math.round(motors[0].spsForRpm(rpm));
+  const spsB = Math.round(motors[1].spsForRpm(rpm));
+  if (spsA === 0 || spsB === 0) {
+    $('#syncStatus').textContent = 'RPM too low for step rate (min ~' +
+      (motors[0].actualRpm(1)).toFixed(3) + ' RPM)';
+    return;
+  }
+  motors[0].setRun(syncDir * spsA);
+  motors[1].setRun(-syncDir * spsB);
+  $('#syncStatus').textContent =
+    'A ' + (syncDir > 0 ? '⟳' : '⟲') + ' ' + motors[0].actualRpm(spsA).toFixed(2) + ' RPM · ' +
+    'B ' + (syncDir > 0 ? '⟲' : '⟳') + ' ' + motors[1].actualRpm(spsB).toFixed(2) + ' RPM';
+  log('counter-rotation: ' + spsA + ' / -' + spsB + ' sps');
+}
+function syncStopAll() {
+  motors[0].setRun(0);
+  motors[1].setRun(0);
+  $('#syncStatus').textContent = 'stopped';
+}
+$('#syncStart').onclick = syncRun;
+$('#syncSwap').onclick = () => { syncDir = -syncDir; syncRun(); };
+$('#syncStop').onclick = syncStopAll;
+$('#syncRpm').addEventListener('change', () => {
+  if ($('#syncStatus').textContent.startsWith('A ')) syncRun();  // live-update while running
+});
+
+// emergency stop on spacebar
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+    e.preventDefault();
+    $('#stopAll').click();
+  }
+});
+
+// init
+refreshPorts();
+api('/api/status').then(s => { if (s.connected) setConnected(true, s.port); });
+</script>
+</body>
+</html>

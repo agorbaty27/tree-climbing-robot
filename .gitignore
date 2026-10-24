@@ -1,0 +1,6 @@
+.DS_Store
+secrets.h
+.claude/settings.local.json
+__pycache__/
+
+CLAUDE.md
